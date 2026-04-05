@@ -1,0 +1,39 @@
+# spreadBot — CEX-DEX Arbitrage Bot
+# Install: pip install -r requirements.txt
+
+# Async runtime
+websockets==13.1            # WebSocket client for all feeds
+aiohttp==3.11.11            # Binance REST API, CoinGecko
+
+# Ethereum / EVM chains
+web3==7.6.0                 # ETH/BSC/Arbitrum: ABI decode, tx signing
+eth-abi==5.1.0              # ABI encoding (bundled with web3, listed for clarity)
+eth-account==0.13.4         # Transaction signing for live trading
+
+# Solana
+solders==0.21.0             # Rust-backed Solana types (fast)
+solana==0.35.1              # Solana RPC client
+
+# Database
+aiosqlite==0.20.0           # Non-blocking SQLite writes from event loop
+
+# Data / Math
+numpy==2.2.1                # Rolling volatility, statistics
+pandas==2.2.3               # Backtest reporting, trade analysis
+
+# Configuration
+python-dotenv==1.0.1        # Load .env into environment
+pydantic==2.10.5            # Data validation
+pydantic-settings==2.7.0    # Settings from env vars
+
+# Logging / Monitoring
+structlog==24.4.0           # Structured JSON logging
+rich==13.9.4                # Pretty console output, dashboard
+
+# Fast event loop (Linux/Mac only — ignored on Windows)
+uvloop==0.21.0; sys_platform != "win32"
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-mock==3.14.0

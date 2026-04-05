@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SpreadBot Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    body { background: #0d1117; color: #c9d1d9; font-size: 0.875rem; }
+    .card { background: #161b22; border: 1px solid #30363d; }
+    .card-header { background: #21262d; border-bottom: 1px solid #30363d; font-weight: 600; letter-spacing: .03em; }
+    .stat-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; }
+    .stat-label { color: #8b949e; font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
+    .stat-value { font-size: 1.5rem; font-weight: 700; }
+    .positive { color: #3fb950; }
+    .negative { color: #f85149; }
+    .neutral  { color: #58a6ff; }
+    .badge-viable { background: #1f6feb; }
+    .badge-not-viable { background: #30363d; color: #8b949e; }
+    table { font-size: .8rem; }
+    th { color: #8b949e; font-weight: 500; }
+    td, th { border-color: #30363d !important; }
+    .feed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    .dot-ok  { background: #3fb950; }
+    .dot-err { background: #f85149; }
+    .uptime-bar { font-family: monospace; color: #8b949e; font-size: .78rem; }
+    .ws-status { font-size: .75rem; }
+    .table-responsive { max-height: 320px; overflow-y: auto; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #161b22; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    #pnl-chart { max-height: 220px; }
+  </style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar navbar-dark px-3 py-2" style="background:#161b22; border-bottom:1px solid #30363d;">
+  <span class="navbar-brand fw-bold" style="color:#58a6ff;">&#9685; SpreadBot</span>
+  <span class="ms-auto me-3 uptime-bar" id="uptime">uptime: --</span>
+  <span class="badge bg-secondary ws-status" id="ws-badge">WS: connecting...</span>
+</nav>
+
+<div class="container-fluid py-3">
+
+  <!-- Top stat cards -->
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">Total P&L</div>
+        <div class="stat-value" id="stat-pnl">--</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">Trades</div>
+        <div class="stat-value neutral" id="stat-trades">--</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value" id="stat-winrate">--</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">ROI</div>
+        <div class="stat-value" id="stat-roi">--</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">Opps Scanned</div>
+        <div class="stat-value neutral" id="stat-opps">--</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl-2">
+      <div class="stat-box">
+        <div class="stat-label">Viable Rate</div>
+        <div class="stat-value" id="stat-viable">--</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+
+    <!-- P&L Chart -->
+    <div class="col-12 col-xl-7">
+      <div class="card h-100">
+        <div class="card-header">Cumulative P&L</div>
+        <div class="card-body p-2">
+          <canvas id="pnl-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gas Panel -->
+    <div class="col-12 col-xl-5">
+      <div class="card h-100">
+        <div class="card-header">Gas Prices</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>Chain</th><th>Gwei</th><th>USD/swap</th><th>Block</th><th>Stale?</th></tr></thead>
+            <tbody id="gas-tbody">
+              <tr><td colspan="5" class="text-center text-muted py-3">Waiting for data...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Opportunities -->
+    <div class="col-12 col-xl-7">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between">
+          Recent Opportunities
+          <span class="badge bg-secondary" id="opp-count">0</span>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+              <thead><tr><th>Time</th><th>Pair</th><th>Chain</th><th>Dir</th><th>Spread%</th><th>Net%</th><th>Status</th></tr></thead>
+              <tbody id="opp-tbody">
+                <tr><td colspan="7" class="text-center text-muted py-3">No opportunities yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feed Health -->
+    <div class="col-12 col-xl-5">
+      <div class="card">
+        <div class="card-header">Feed Health</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>Feed</th><th>Status</th><th>Messages</th><th>Reconnects</th><th>p50 µs</th></tr></thead>
+            <tbody id="feeds-tbody">
+              <tr><td colspan="5" class="text-center text-muted py-3">Connecting...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Trades -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between">
+          Recent Trades
+          <span class="badge bg-secondary" id="trade-count">0</span>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+              <thead>
+                <tr>
+                  <th>#</th><th>Pair</th><th>Chain</th><th>Dir</th>
+                  <th>Notional</th><th>Gross PnL</th><th>Fees</th><th>Gas</th>
+                  <th>Net PnL</th><th>Net%</th><th>Spread%</th>
+                </tr>
+              </thead>
+              <tbody id="trades-tbody">
+                <tr><td colspan="11" class="text-center text-muted py-3">No trades yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Adaptive Learning -->
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">Adaptive Learner — Per-Pair Thresholds</div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+              <thead>
+                <tr>
+                  <th>Pair</th><th>Chain</th><th>Dir</th><th>Trades</th>
+                  <th>Win Rate</th><th>Avg Profit%</th><th>Avg Loss%</th>
+                  <th>EV Score</th><th>Threshold%</th><th>Cooldown</th>
+                </tr>
+              </thead>
+              <tbody id="learning-tbody">
+                <tr><td colspan="10" class="text-center text-muted py-3">No learning data yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /row -->
+</div><!-- /container -->
+
+<script>
+// ── Chart.js P&L line chart ──────────────────────────────────────────────────
+const ctx = document.getElementById('pnl-chart').getContext('2d');
+const pnlChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Cumulative P&L ($)',
+      data: [],
+      borderColor: '#3fb950',
+      backgroundColor: 'rgba(63,185,80,0.08)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.3,
+    }]
+  },
+  options: {
+    responsive: true,
+    animation: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: '#21262d' },
+        ticks: { color: '#8b949e', callback: v => '$' + v.toFixed(2) },
+      }
+    }
+  }
+});
+
+// ── Utility ──────────────────────────────────────────────────────────────────
+function fmt(n, digits=2) {
+  return (n === null || n === undefined) ? '--' : n.toFixed(digits);
+}
+function fmtTs(epochSec) {
+  const d = new Date(epochSec * 1000);
+  return d.toLocaleTimeString();
+}
+function colorVal(v, el) {
+  el.textContent = (v >= 0 ? '+' : '') + fmt(v, 4);
+  el.className = 'stat-value ' + (v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral');
+}
+function colorSpan(v, digits=4) {
+  const cls = v > 0 ? 'positive' : v < 0 ? 'negative' : '';
+  return `<span class="${cls}">${v > 0 ? '+' : ''}${fmt(v, digits)}</span>`;
+}
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+// ── State rendering ──────────────────────────────────────────────────────────
+function render(state) {
+  // Uptime
+  document.getElementById('uptime').textContent = 'uptime: ' + fmtUptime(state.uptime_s || 0);
+
+  // Trader stats
+  const t = state.trader || {};
+  const pnl = t.total_pnl_usd ?? 0;
+  colorVal(pnl, document.getElementById('stat-pnl'));
+  document.getElementById('stat-trades').textContent = t.total_trades ?? '--';
+  const wr = t.win_rate ?? 0;
+  const wrEl = document.getElementById('stat-winrate');
+  wrEl.textContent = fmt(wr, 1) + '%';
+  wrEl.className = 'stat-value ' + (wr >= 60 ? 'positive' : wr >= 40 ? 'neutral' : 'negative');
+  const roi = t.roi_pct ?? 0;
+  const roiEl = document.getElementById('stat-roi');
+  roiEl.textContent = (roi >= 0 ? '+' : '') + fmt(roi, 3) + '%';
+  roiEl.className = 'stat-value ' + (roi > 0 ? 'positive' : roi < 0 ? 'negative' : 'neutral');
+
+  // Scanner stats
+  const sc = state.scanner || {};
+  document.getElementById('stat-opps').textContent = (sc.opportunities_found ?? '--').toLocaleString();
+  const vr = sc.viable_rate ?? 0;
+  const vrEl = document.getElementById('stat-viable');
+  vrEl.textContent = fmt(vr, 2) + '%';
+  vrEl.className = 'stat-value ' + (vr > 1 ? 'positive' : 'neutral');
+
+  // Gas
+  const gas = state.gas || {};
+  const gasTbody = document.getElementById('gas-tbody');
+  const gasRows = Object.entries(gas).map(([chain, g]) => `
+    <tr>
+      <td><span class="badge bg-secondary">${chain.toUpperCase()}</span></td>
+      <td>${fmt(g.gwei, 3)}</td>
+      <td>$${fmt(g.usd_per_swap, 4)}</td>
+      <td>${g.block ?? '--'}</td>
+      <td>${g.stale ? '<span class="text-warning">stale</span>' : '<span class="positive">ok</span>'}</td>
+    </tr>`).join('');
+  gasTbody.innerHTML = gasRows || '<tr><td colspan="5" class="text-center text-muted py-2">No gas data</td></tr>';
+
+  // Feeds
+  const feeds = state.feeds || [];
+  const feedsTbody = document.getElementById('feeds-tbody');
+  feedsTbody.innerHTML = feeds.map(f => `
+    <tr>
+      <td><span class="feed-dot ${f.connected ? 'dot-ok' : 'dot-err'}"></span>${f.name}</td>
+      <td>${f.connected ? '<span class="positive">connected</span>' : '<span class="negative">disconnected</span>'}</td>
+      <td>${(f.messages ?? 0).toLocaleString()}</td>
+      <td>${f.reconnects ?? 0}</td>
+      <td>${fmt(f.p50_us, 0)}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="text-center text-muted">No feeds</td></tr>';
+
+  // Opportunities
+  const opps = state.recent_opportunities || [];
+  document.getElementById('opp-count').textContent = opps.length;
+  const oppTbody = document.getElementById('opp-tbody');
+  oppTbody.innerHTML = opps.length === 0
+    ? '<tr><td colspan="7" class="text-center text-muted py-3">No opportunities yet</td></tr>'
+    : opps.map(o => `
+      <tr>
+        <td>${fmtTs(o.ts)}</td>
+        <td>${o.pair}</td>
+        <td>${o.chain}</td>
+        <td>${o.direction}</td>
+        <td>${colorSpan(o.raw_spread_pct)}</td>
+        <td>${colorSpan(o.net_profit_pct)}</td>
+        <td>${o.viable
+          ? '<span class="badge badge-viable">viable</span>'
+          : '<span class="badge badge-not-viable">skip</span>'}</td>
+      </tr>`).join('');
+
+  // Trades
+  const trades = state.recent_trades || [];
+  document.getElementById('trade-count').textContent = trades.length;
+  const tradesTbody = document.getElementById('trades-tbody');
+  tradesTbody.innerHTML = trades.length === 0
+    ? '<tr><td colspan="11" class="text-center text-muted py-3">No trades yet</td></tr>'
+    : trades.map(tr => `
+      <tr>
+        <td class="text-muted">${tr.id ?? ''}</td>
+        <td>${tr.pair}</td>
+        <td>${tr.chain}</td>
+        <td>${tr.direction}</td>
+        <td>$${fmt(tr.notional_usd, 0)}</td>
+        <td>${colorSpan(tr.gross_pnl_usd)}</td>
+        <td class="text-warning">$${fmt(tr.fees_usd, 4)}</td>
+        <td class="text-warning">$${fmt(tr.gas_usd, 4)}</td>
+        <td>${colorSpan(tr.net_pnl_usd)}</td>
+        <td>${colorSpan(tr.net_pnl_pct)}</td>
+        <td>${colorSpan(tr.raw_spread_at_entry)}</td>
+      </tr>`).join('');
+
+  // P&L series
+  const series = state.pnl_series || [];
+  if (series.length > 0) {
+    pnlChart.data.labels = series.map(p => fmtTs(p.ts));
+    pnlChart.data.datasets[0].data = series.map(p => p.cumulative_pnl);
+    const last = series[series.length - 1].cumulative_pnl;
+    pnlChart.data.datasets[0].borderColor = last >= 0 ? '#3fb950' : '#f85149';
+    pnlChart.data.datasets[0].backgroundColor = last >= 0 ? 'rgba(63,185,80,0.08)' : 'rgba(248,81,73,0.08)';
+    pnlChart.update('none');
+  }
+
+  // Learning
+  const learning = state.learning || [];
+  const learnTbody = document.getElementById('learning-tbody');
+  learnTbody.innerHTML = learning.length === 0
+    ? '<tr><td colspan="10" class="text-center text-muted py-3">No learning data yet</td></tr>'
+    : learning.map(l => `
+      <tr>
+        <td>${l.pair}</td>
+        <td>${l.chain}</td>
+        <td>${l.direction}</td>
+        <td>${l.trade_count}</td>
+        <td>${colorSpan(l.win_rate * 100 - 50, 1)}%</td>
+        <td class="positive">${fmt(l.avg_profit_pct * 100, 4)}%</td>
+        <td class="negative">${fmt(l.avg_loss_pct * 100, 4)}%</td>
+        <td>${colorSpan(l.ev_score * 100, 4)}</td>
+        <td class="neutral">${fmt(l.adaptive_threshold * 100, 4)}%</td>
+        <td>${l.in_cooldown
+          ? `<span class="badge bg-warning text-dark">cooldown ${fmt(l.cooldown_remaining_s,0)}s</span>`
+          : '<span class="badge bg-success">active</span>'}</td>
+      </tr>`).join('');
+}
+
+// ── WebSocket connection ─────────────────────────────────────────────────────
+const wsBadge = document.getElementById('ws-badge');
+let ws;
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    wsBadge.textContent = 'WS: live';
+    wsBadge.className = 'badge bg-success ws-status';
+  };
+  ws.onmessage = (e) => {
+    try { render(JSON.parse(e.data)); } catch(err) { console.error(err); }
+  };
+  ws.onclose = () => {
+    wsBadge.textContent = 'WS: reconnecting...';
+    wsBadge.className = 'badge bg-warning text-dark ws-status';
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => {
+    wsBadge.textContent = 'WS: error';
+    wsBadge.className = 'badge bg-danger ws-status';
+  };
+}
+connect();
+</script>
+</body>
+</html>

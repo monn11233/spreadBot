@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: spreadbot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --mode paper
+    healthCheckPath: /api/state
+    envVars:
+      - key: BOT_MODE
+        value: paper
+      - key: DASHBOARD_HOST
+        value: 0.0.0.0
+      - key: DB_PATH
+        value: /data/spreadbot.db
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: "true"
+      # Set these in Render dashboard — do NOT commit to git:
+      # BINANCE_API_KEY, BINANCE_API_SECRET
+      # ETH_WS_URL, ARB_WS_URL, BSC_WS_URL, SOLANA_WS_URL
+
+    disk:
+      name: spreadbot-data
+      mountPath: /data
+      sizeGB: 1

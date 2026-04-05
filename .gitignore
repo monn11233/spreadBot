@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+
+# Claude Code internal
+.claude/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
