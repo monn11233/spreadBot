@@ -1,43 +1,40 @@
 """
-CEX price feed — Kraken WebSocket v2 (primary) + OKX WebSocket (fallback).
+CEX price feed — Kraken REST polling (primary).
 
-Kraken has no cloud IP restrictions — works from Render/AWS/GCP.
-Covers all DEX-matched pairs: ETH/USDT (Uniswap ETH+Arb), SOL/USDT (Jupiter),
-plus XRP, BNB, ADA for additional spread scanning.
+Uses https://api.kraken.com/0/public/Ticker — pure HTTPS, works from any
+cloud provider with zero geo-restrictions.
+Polls every 500ms for all supported pairs.
 
-Prices emitted as source='binance' — no downstream changes needed.
+Prices emitted as source='binance' so no downstream changes are needed.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Dict, List, Optional
 
-import websockets
+import aiohttp
 
 from core.events import PriceEventBus
 from core.models import PriceEvent
 
 logger = logging.getLogger(__name__)
 
-# Kraken WebSocket v2 — no geo-restrictions, port 443
-_KRAKEN_WS = "wss://ws.kraken.com/v2"
+_KRAKEN_REST = "https://api.kraken.com/0/public/Ticker"
+_POLL_INTERVAL = 0.5  # seconds
 
-# Kraken uses "ETH/USDT" format — map to our internal "ETH/USDT"
-# Only include pairs Kraken actually supports
+# Pairs Kraken supports in USDT — extend as needed
 _KRAKEN_SUPPORTED = {
-    "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT",
-    "ADA/USDT", "DOGE/USDT", "BTC/USDT", "DOT/USDT",
-    "LINK/USDT", "AVAX/USDT", "MATIC/USDT", "TRX/USDT",
-    "XAUT/USDT",
+    "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT",
+    "DOGEUSDT", "BTCUSDT", "DOTUSDT", "LINKUSDT", "AVAXUSDT",
+    "TRXUSDT", "XAUTUSDT",
 }
 
 
-def _binance_sym_to_slash(sym: str) -> Optional[str]:
-    """'ETHUSDT' → 'ETH/USDT', returns None if quote not recognised."""
-    sym = sym.upper()
+def _normalize(symbol: str) -> Optional[str]:
+    """'ETHUSDT' → 'ETH/USDT'"""
+    sym = symbol.upper()
     for quote in ("USDT", "USDC", "BTC", "ETH"):
         if sym.endswith(quote):
             return sym[: -len(quote)] + "/" + quote
@@ -46,9 +43,8 @@ def _binance_sym_to_slash(sym: str) -> Optional[str]:
 
 class BinanceFeed:
     """
-    Streams CEX best bid/ask from Kraken WebSocket v2.
-    Falls back to OKX WebSocket if Kraken fails.
-    Emits PriceEvents with source='binance'.
+    Polls Kraken REST /Ticker every 500ms and pushes PriceEvents as source='binance'.
+    Kraken REST is HTTPS-only, works from Render/AWS/GCP without restrictions.
     """
 
     def __init__(self, bus: PriceEventBus, symbols: List[str]):
@@ -59,158 +55,89 @@ class BinanceFeed:
         self._reconnect_count = 0
         self.name = "binance"
 
-        # Convert Binance-style symbols to slash format
-        slash_pairs = []
+        # Only keep symbols Kraken supports
+        supported = []
+        self._sym_to_pair: Dict[str, str] = {}  # "ETHUSDT" → "ETH/USDT"
         for sym in symbols:
-            sp = _binance_sym_to_slash(sym)
-            if sp:
-                slash_pairs.append(sp)
+            sym_up = sym.upper()
+            if sym_up in _KRAKEN_SUPPORTED:
+                pair = _normalize(sym_up)
+                if pair:
+                    supported.append(sym_up)
+                    self._sym_to_pair[sym_up] = pair
 
-        # Only subscribe to pairs Kraken supports
-        self._kraken_pairs = [p for p in slash_pairs if p in _KRAKEN_SUPPORTED]
-        # All pairs for OKX fallback (ETH-USDT format)
-        self._okx_inst: Dict[str, str] = {}
-        for sp in slash_pairs:
-            base, quote = sp.split("/")
-            self._okx_inst[f"{base}-{quote}"] = sp
-
-        # slash_pair → slash_pair (identity, used as lookup)
-        self._pair_set = set(slash_pairs)
-
-        logger.info(
-            "[binance] Kraken pairs (%d): %s",
-            len(self._kraken_pairs), self._kraken_pairs,
-        )
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        # Kraken pair format for REST: comma-separated e.g. "ETHUSDT,SOLUSDT"
+        self._kraken_query = ",".join(supported)
+        logger.info("[binance] Kraken REST: tracking %d pairs: %s",
+                    len(supported), supported)
 
     async def start(self) -> None:
         self._running = True
-        while self._running:
-            # Try Kraken first
-            try:
-                await self._run_kraken()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.warning("[binance] Kraken error: %s — trying OKX fallback", exc)
-                self._connected = False
+        if not self._kraken_query:
+            logger.error("[binance] No supported Kraken pairs — feed inactive")
+            return
 
-            if not self._running:
-                break
+        logger.info("[binance] Starting Kraken REST poller")
+        async with aiohttp.ClientSession() as session:
+            self._connected = True
+            self._reconnect_count = 1
+            logger.info("[binance] Kraken REST poller connected")
 
-            # OKX fallback — timeout 30s in case data doesn't flow
-            try:
-                await asyncio.wait_for(self._run_okx(), timeout=30)
-            except asyncio.TimeoutError:
-                logger.warning("[binance] OKX sent no data in 30s — retrying Kraken")
-                self._connected = False
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.warning("[binance] OKX error: %s — retrying Kraken in 5s", exc)
-                self._connected = False
-                await asyncio.sleep(5)
+            while self._running:
+                t0 = time.monotonic()
+                try:
+                    async with session.get(
+                        _KRAKEN_REST,
+                        params={"pair": self._kraken_query},
+                        timeout=aiohttp.ClientTimeout(total=4),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning("[binance] Kraken HTTP %d", resp.status)
+                            await asyncio.sleep(5)
+                            continue
+                        body = await resp.json()
+                        errors = body.get("error", [])
+                        if errors:
+                            logger.warning("[binance] Kraken API error: %s", errors)
+                            await asyncio.sleep(5)
+                            continue
+                        recv_ns = time.time_ns()
+                        for kraken_sym, data in body.get("result", {}).items():
+                            # Kraken result keys are like "ETHUSDT" or "XETHZUSDT"
+                            # Normalize by stripping leading X/Z
+                            clean = kraken_sym.lstrip("XZ") if kraken_sym.startswith(("X", "Z")) and len(kraken_sym) > 6 else kraken_sym
+                            pair = self._sym_to_pair.get(clean) or self._sym_to_pair.get(kraken_sym)
+                            if not pair:
+                                continue
+                            try:
+                                bid = float(data["b"][0])
+                                ask = float(data["a"][0])
+                            except (KeyError, IndexError, ValueError):
+                                continue
+                            if bid <= 0 or ask <= 0 or ask < bid:
+                                continue
+                            self._bus.put_nowait(PriceEvent(
+                                source="binance", pair=pair,
+                                bid=bid, ask=ask, timestamp_ns=recv_ns,
+                            ))
+                            self._msg_count += 1
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.warning("[binance] Kraken poll error: %s", exc)
+                    self._connected = False
+                    await asyncio.sleep(5)
+                    self._connected = True
+                    continue
+
+                await asyncio.sleep(max(0.0, _POLL_INTERVAL - (time.monotonic() - t0)))
+
+        self._connected = False
+        logger.info("[binance] Kraken REST poller stopped")
 
     async def stop(self) -> None:
         self._running = False
-
-    # ------------------------------------------------------------------
-    # Kraken WebSocket v2
-    # ------------------------------------------------------------------
-
-    async def _run_kraken(self) -> None:
-        if not self._kraken_pairs:
-            raise RuntimeError("No Kraken-supported pairs to subscribe to")
-
-        async with websockets.connect(_KRAKEN_WS, open_timeout=10,
-                                      ping_interval=20, compression=None) as ws:
-            sub = json.dumps({
-                "method": "subscribe",
-                "params": {"channel": "ticker", "symbol": self._kraken_pairs},
-            })
-            await ws.send(sub)
-            self._connected = True
-            self._reconnect_count += 1
-            logger.info("[binance] Kraken connected (reconnect #%d), %d pairs",
-                        self._reconnect_count, len(self._kraken_pairs))
-
-            async for raw in ws:
-                if not self._running:
-                    break
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    continue
-                if msg.get("channel") != "ticker":
-                    continue
-                recv_ns = time.time_ns()
-                for item in msg.get("data", []):
-                    pair = item.get("symbol", "")
-                    if pair not in self._pair_set:
-                        continue
-                    try:
-                        bid = float(item["bid"])
-                        ask = float(item["ask"])
-                    except (KeyError, ValueError, TypeError):
-                        continue
-                    if bid <= 0 or ask <= 0 or ask < bid:
-                        continue
-                    self._bus.put_nowait(PriceEvent(
-                        source="binance", pair=pair,
-                        bid=bid, ask=ask, timestamp_ns=recv_ns,
-                    ))
-                    self._msg_count += 1
-
-        self._connected = False
-
-    # ------------------------------------------------------------------
-    # OKX WebSocket fallback
-    # ------------------------------------------------------------------
-
-    async def _run_okx(self) -> None:
-        url = "wss://ws.okx.com/ws/v5/public"
-        args = [{"channel": "tickers", "instId": inst} for inst in self._okx_inst]
-        sub = json.dumps({"op": "subscribe", "args": args})
-
-        async with websockets.connect(url, open_timeout=10,
-                                      ping_interval=20, compression=None) as ws:
-            await ws.send(sub)
-            self._connected = True
-            self._reconnect_count += 1
-            logger.info("[binance] OKX fallback connected (reconnect #%d)", self._reconnect_count)
-
-            async for raw in ws:
-                if not self._running:
-                    break
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    continue
-                recv_ns = time.time_ns()
-                for item in msg.get("data", []):
-                    inst_id = item.get("instId", "")
-                    pair = self._okx_inst.get(inst_id)
-                    if not pair:
-                        continue
-                    try:
-                        bid = float(item["bidPx"])
-                        ask = float(item["askPx"])
-                    except (KeyError, ValueError, TypeError):
-                        continue
-                    if bid <= 0 or ask <= 0 or ask < bid:
-                        continue
-                    self._bus.put_nowait(PriceEvent(
-                        source="binance", pair=pair,
-                        bid=bid, ask=ask, timestamp_ns=recv_ns,
-                    ))
-                    self._msg_count += 1
-
-        self._connected = False
-
-    # ------------------------------------------------------------------
 
     @property
     def stats(self) -> dict:
