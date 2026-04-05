@@ -218,6 +218,25 @@ class DashboardServer:
                     dead.add(ws)
             self._ws_clients -= dead
 
+    async def _keepalive_loop(self) -> None:
+        """Self-ping every 4 minutes to prevent Render free tier from sleeping."""
+        import os
+        import aiohttp
+        await asyncio.sleep(60)  # wait for server to fully start
+        url = f"http://localhost:{self._port}/api/state"
+        # On Render, prefer the public URL so the external health check also fires
+        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if render_url:
+            url = f"{render_url}/api/state"
+        while True:
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                        logger.debug("[dashboard] keepalive ping %d", r.status)
+            except Exception as exc:
+                logger.debug("[dashboard] keepalive error: %s", exc)
+            await asyncio.sleep(240)  # every 4 minutes
+
     # ------------------------------------------------------------------
     # Main entry
     # ------------------------------------------------------------------
@@ -235,4 +254,7 @@ class DashboardServer:
         await site.start()
         logger.info("[dashboard] Serving at http://%s:%d", self._host, self._port)
 
-        await self._broadcast_loop()
+        await asyncio.gather(
+            self._broadcast_loop(),
+            self._keepalive_loop(),
+        )
