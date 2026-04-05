@@ -17,9 +17,11 @@ services:
         value: INFO
       - key: LOG_JSON
         value: "true"
-      # Set these in Render dashboard — do NOT commit to git:
-      # BINANCE_API_KEY, BINANCE_API_SECRET
-      # ETH_WS_URL, ARB_WS_URL, BSC_WS_URL, SOLANA_WS_URL
+      # Solana public RPC — no key needed
+      - key: SOLANA_WS_URL
+        value: wss://api.mainnet-beta.solana.com
+      # Set ETH_WS_URL and ARB_WS_URL in Render dashboard (Alchemy keys)
+      # BINANCE_API_KEY / BINANCE_API_SECRET not needed for paper trading
 
     disk:
       name: spreadbot-data
