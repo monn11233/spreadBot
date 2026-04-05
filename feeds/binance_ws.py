@@ -1,12 +1,11 @@
 """
-CEX spot price feed — tries multiple exchanges until one works.
+CEX price feed — Kraken WebSocket v2 (primary) + OKX WebSocket (fallback).
 
-Priority order (all cloud-IP friendly):
-  1. OKX     — wss://ws.okx.com:8443/ws/v5/public  (best cloud support)
-  2. Bybit   — https://api.bybit.com/v5/market/tickers
-  3. Kraken  — https://api.kraken.com/0/public/Ticker
+Kraken has no cloud IP restrictions — works from Render/AWS/GCP.
+Covers all DEX-matched pairs: ETH/USDT (Uniswap ETH+Arb), SOL/USDT (Jupiter),
+plus XRP, BNB, ADA for additional spread scanning.
 
-Prices published as 'binance' source so the rest of the system needs no changes.
+Prices emitted as source='binance' — no downstream changes needed.
 """
 from __future__ import annotations
 
@@ -14,9 +13,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-import aiohttp
 import websockets
 
 from core.events import PriceEventBus
@@ -24,101 +22,120 @@ from core.models import PriceEvent
 
 logger = logging.getLogger(__name__)
 
+# Kraken WebSocket v2 — no geo-restrictions, port 443
+_KRAKEN_WS = "wss://ws.kraken.com/v2"
 
-def _normalize(symbol: str) -> str:
-    sym = symbol.upper().replace("-", "").replace("_", "")
-    if sym.endswith("USDT"):
-        return sym[:-4] + "/USDT"
-    if sym.endswith("USDC"):
-        return sym[:-4] + "/USDC"
-    if sym.endswith("BTC"):
-        return sym[:-3] + "/BTC"
-    return sym
+# Kraken uses "ETH/USDT" format — map to our internal "ETH/USDT"
+# Only include pairs Kraken actually supports
+_KRAKEN_SUPPORTED = {
+    "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT",
+    "ADA/USDT", "DOGE/USDT", "BTC/USDT", "DOT/USDT",
+    "LINK/USDT", "AVAX/USDT", "MATIC/USDT", "TRX/USDT",
+    "XAUT/USDT",
+}
+
+
+def _binance_sym_to_slash(sym: str) -> Optional[str]:
+    """'ETHUSDT' → 'ETH/USDT', returns None if quote not recognised."""
+    sym = sym.upper()
+    for quote in ("USDT", "USDC", "BTC", "ETH"):
+        if sym.endswith(quote):
+            return sym[: -len(quote)] + "/" + quote
+    return None
 
 
 class BinanceFeed:
     """
-    Fetches CEX best bid/ask from OKX WebSocket (primary) with Bybit REST fallback.
-    Emits PriceEvents with source='binance' — no changes needed downstream.
+    Streams CEX best bid/ask from Kraken WebSocket v2.
+    Falls back to OKX WebSocket if Kraken fails.
+    Emits PriceEvents with source='binance'.
     """
 
     def __init__(self, bus: PriceEventBus, symbols: List[str]):
         self._bus = bus
-        self._symbols_upper = [s.upper() for s in symbols]
-        # Build lookup: OKX uses "ETH-USDT", Bybit uses "ETHUSDT"
-        self._okx_to_pair: Dict[str, str] = {}
-        self._bybit_to_pair: Dict[str, str] = {}
-        for sym in self._symbols_upper:
-            pair = _normalize(sym)
-            # OKX: insert dash before quote currency
-            for quote in ("USDT", "USDC", "BTC", "ETH"):
-                if sym.endswith(quote):
-                    base = sym[: -len(quote)]
-                    self._okx_to_pair[f"{base}-{quote}"] = pair
-                    break
-            self._bybit_to_pair[sym] = pair
-
         self._running = False
         self._connected = False
         self._msg_count = 0
         self._reconnect_count = 0
         self.name = "binance"
 
+        # Convert Binance-style symbols to slash format
+        slash_pairs = []
+        for sym in symbols:
+            sp = _binance_sym_to_slash(sym)
+            if sp:
+                slash_pairs.append(sp)
+
+        # Only subscribe to pairs Kraken supports
+        self._kraken_pairs = [p for p in slash_pairs if p in _KRAKEN_SUPPORTED]
+        # All pairs for OKX fallback (ETH-USDT format)
+        self._okx_inst: Dict[str, str] = {}
+        for sp in slash_pairs:
+            base, quote = sp.split("/")
+            self._okx_inst[f"{base}-{quote}"] = sp
+
+        # slash_pair → slash_pair (identity, used as lookup)
+        self._pair_set = set(slash_pairs)
+
+        logger.info(
+            "[binance] Kraken pairs (%d): %s",
+            len(self._kraken_pairs), self._kraken_pairs,
+        )
+
     # ------------------------------------------------------------------
-    # Entry point
+    # Public API
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
         self._running = True
-        okx_failed = False
         while self._running:
-            if not okx_failed:
-                try:
-                    logger.info("[binance] Trying OKX WebSocket (port 443)...")
-                    # Give OKX 30s to prove it works; if no price msgs, fall to Bybit
-                    await asyncio.wait_for(self._run_okx(), timeout=30)
-                except asyncio.TimeoutError:
-                    logger.warning("[binance] OKX sent no data in 30s — switching to Bybit REST")
-                    okx_failed = True
-                    self._connected = False
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    logger.warning("[binance] OKX error (%s) — switching to Bybit REST", exc)
-                    okx_failed = True
-                    self._connected = False
-                # If OKX delivered data, it disconnected normally — retry OKX
-                if not okx_failed:
-                    continue
-            if not self._running:
-                break
+            # Try Kraken first
             try:
-                await self._run_bybit()
+                await self._run_kraken()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning("[binance] Bybit failed (%s), retrying in 10s", exc)
+                logger.warning("[binance] Kraken error: %s — trying OKX fallback", exc)
                 self._connected = False
-                await asyncio.sleep(10)
+
+            if not self._running:
+                break
+
+            # OKX fallback — timeout 30s in case data doesn't flow
+            try:
+                await asyncio.wait_for(self._run_okx(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.warning("[binance] OKX sent no data in 30s — retrying Kraken")
+                self._connected = False
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("[binance] OKX error: %s — retrying Kraken in 5s", exc)
+                self._connected = False
+                await asyncio.sleep(5)
 
     async def stop(self) -> None:
         self._running = False
 
     # ------------------------------------------------------------------
-    # OKX WebSocket — primary
+    # Kraken WebSocket v2
     # ------------------------------------------------------------------
 
-    async def _run_okx(self) -> None:
-        url = "wss://ws.okx.com/ws/v5/public"  # port 443
-        # Subscribe to tickers for all pairs
-        args = [{"channel": "tickers", "instId": inst} for inst in self._okx_to_pair]
-        sub_msg = json.dumps({"op": "subscribe", "args": args})
+    async def _run_kraken(self) -> None:
+        if not self._kraken_pairs:
+            raise RuntimeError("No Kraken-supported pairs to subscribe to")
 
-        async with websockets.connect(url, open_timeout=10, ping_interval=20, compression=None) as ws:
-            await ws.send(sub_msg)
+        async with websockets.connect(_KRAKEN_WS, open_timeout=10,
+                                      ping_interval=20, compression=None) as ws:
+            sub = json.dumps({
+                "method": "subscribe",
+                "params": {"channel": "ticker", "symbol": self._kraken_pairs},
+            })
+            await ws.send(sub)
             self._connected = True
             self._reconnect_count += 1
-            logger.info("[binance] OKX WebSocket connected (reconnect #%d)", self._reconnect_count)
+            logger.info("[binance] Kraken connected (reconnect #%d), %d pairs",
+                        self._reconnect_count, len(self._kraken_pairs))
 
             async for raw in ws:
                 if not self._running:
@@ -127,13 +144,55 @@ class BinanceFeed:
                     msg = json.loads(raw)
                 except Exception:
                     continue
-                data = msg.get("data")
-                if not data:
+                if msg.get("channel") != "ticker":
                     continue
                 recv_ns = time.time_ns()
-                for item in data:
+                for item in msg.get("data", []):
+                    pair = item.get("symbol", "")
+                    if pair not in self._pair_set:
+                        continue
+                    try:
+                        bid = float(item["bid"])
+                        ask = float(item["ask"])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                    if bid <= 0 or ask <= 0 or ask < bid:
+                        continue
+                    self._bus.put_nowait(PriceEvent(
+                        source="binance", pair=pair,
+                        bid=bid, ask=ask, timestamp_ns=recv_ns,
+                    ))
+                    self._msg_count += 1
+
+        self._connected = False
+
+    # ------------------------------------------------------------------
+    # OKX WebSocket fallback
+    # ------------------------------------------------------------------
+
+    async def _run_okx(self) -> None:
+        url = "wss://ws.okx.com/ws/v5/public"
+        args = [{"channel": "tickers", "instId": inst} for inst in self._okx_inst]
+        sub = json.dumps({"op": "subscribe", "args": args})
+
+        async with websockets.connect(url, open_timeout=10,
+                                      ping_interval=20, compression=None) as ws:
+            await ws.send(sub)
+            self._connected = True
+            self._reconnect_count += 1
+            logger.info("[binance] OKX fallback connected (reconnect #%d)", self._reconnect_count)
+
+            async for raw in ws:
+                if not self._running:
+                    break
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                recv_ns = time.time_ns()
+                for item in msg.get("data", []):
                     inst_id = item.get("instId", "")
-                    pair = self._okx_to_pair.get(inst_id)
+                    pair = self._okx_inst.get(inst_id)
                     if not pair:
                         continue
                     try:
@@ -144,65 +203,11 @@ class BinanceFeed:
                     if bid <= 0 or ask <= 0 or ask < bid:
                         continue
                     self._bus.put_nowait(PriceEvent(
-                        source="binance",
-                        pair=pair,
-                        bid=bid,
-                        ask=ask,
-                        timestamp_ns=recv_ns,
+                        source="binance", pair=pair,
+                        bid=bid, ask=ask, timestamp_ns=recv_ns,
                     ))
                     self._msg_count += 1
 
-        self._connected = False
-
-    # ------------------------------------------------------------------
-    # Bybit REST — fallback
-    # ------------------------------------------------------------------
-
-    async def _run_bybit(self) -> None:
-        url = "https://api.bybit.com/v5/market/tickers"
-        async with aiohttp.ClientSession() as session:
-            self._connected = True
-            self._reconnect_count += 1
-            logger.info("[binance] Bybit REST fallback connected (reconnect #%d)", self._reconnect_count)
-            while self._running:
-                t0 = time.monotonic()
-                try:
-                    async with session.get(url, params={"category": "spot"},
-                                           timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                        if resp.status != 200:
-                            logger.warning("[binance] Bybit HTTP %d", resp.status)
-                            await asyncio.sleep(5)
-                            continue
-                        body = await resp.json()
-                        recv_ns = time.time_ns()
-                        items = body.get("result", {}).get("list", [])
-                        logger.debug("[binance] Bybit returned %d tickers", len(items))
-                        for item in items:
-                            sym = item.get("symbol", "")
-                            pair = self._bybit_to_pair.get(sym)
-                            if not pair:
-                                continue
-                            try:
-                                bid = float(item["bid1Price"])
-                                ask = float(item["ask1Price"])
-                            except (KeyError, ValueError):
-                                continue
-                            if bid <= 0 or ask <= 0 or ask < bid:
-                                continue
-                            self._bus.put_nowait(PriceEvent(
-                                source="binance", pair=pair,
-                                bid=bid, ask=ask, timestamp_ns=recv_ns,
-                            ))
-                            self._msg_count += 1
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.warning("[binance] Bybit poll error: %s", exc)
-                    self._connected = False
-                    await asyncio.sleep(5)
-                    self._connected = True
-                    continue
-                await asyncio.sleep(max(0.0, 0.5 - (time.monotonic() - t0)))
         self._connected = False
 
     # ------------------------------------------------------------------
