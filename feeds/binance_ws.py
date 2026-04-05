@@ -70,14 +70,26 @@ class BinanceFeed:
 
     async def start(self) -> None:
         self._running = True
+        okx_failed = False
         while self._running:
-            try:
-                logger.info("[binance] Trying OKX WebSocket...")
-                await self._run_okx()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.warning("[binance] OKX failed (%s), falling back to Bybit REST", exc)
+            if not okx_failed:
+                try:
+                    logger.info("[binance] Trying OKX WebSocket (port 443)...")
+                    # Give OKX 30s to prove it works; if no price msgs, fall to Bybit
+                    await asyncio.wait_for(self._run_okx(), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning("[binance] OKX sent no data in 30s — switching to Bybit REST")
+                    okx_failed = True
+                    self._connected = False
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.warning("[binance] OKX error (%s) — switching to Bybit REST", exc)
+                    okx_failed = True
+                    self._connected = False
+                # If OKX delivered data, it disconnected normally — retry OKX
+                if not okx_failed:
+                    continue
             if not self._running:
                 break
             try:
@@ -97,7 +109,7 @@ class BinanceFeed:
     # ------------------------------------------------------------------
 
     async def _run_okx(self) -> None:
-        url = "wss://ws.okx.com:8443/ws/v5/public"
+        url = "wss://ws.okx.com/ws/v5/public"  # port 443
         # Subscribe to tickers for all pairs
         args = [{"channel": "tickers", "instId": inst} for inst in self._okx_to_pair]
         sub_msg = json.dumps({"op": "subscribe", "args": args})
