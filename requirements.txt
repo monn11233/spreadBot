@@ -2,7 +2,7 @@
 # Install: pip install -r requirements.txt
 
 # Async runtime
-websockets==13.1            # WebSocket client for all feeds
+websockets>=10.4            # WebSocket client for all feeds
 aiohttp==3.11.11            # Binance REST API, CoinGecko
 
 # Ethereum / EVM chains
@@ -10,7 +10,7 @@ web3==7.6.0                 # ETH/BSC/Arbitrum: ABI decode, tx signing
 eth-account==0.13.4         # Transaction signing for live trading
 
 # Solana
-solders==0.21.0             # Rust-backed Solana types (fast)
+solders>=0.21.0,<0.22.0     # Rust-backed Solana types (fast)
 solana==0.35.1              # Solana RPC client
 
 # Database
