@@ -19,7 +19,9 @@ from feeds.base_feed import BaseFeed
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "wss://stream.binance.com:9443/stream"
+# binance.vision is Binance's CDN-backed market data endpoint — works from cloud IPs
+# stream.binance.com is often blocked on AWS/GCP/Render
+_BASE_URL = "wss://data-stream.binance.vision/stream"
 
 
 class BinanceFeed(BaseFeed):
