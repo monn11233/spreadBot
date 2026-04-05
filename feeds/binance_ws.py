@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 _KRAKEN_REST = "https://api.kraken.com/0/public/Ticker"
 _POLL_INTERVAL = 0.5  # seconds
 
+# Kraken returns non-standard keys for some symbols — map back to standard
+_KRAKEN_KEY_MAP = {
+    "XDGUSDT": "DOGEUSDT",
+    "XBTUSDT": "BTCUSDT",
+}
+
 # Pairs Kraken supports in USDT — extend as needed
 _KRAKEN_SUPPORTED = {
     "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT",
@@ -55,10 +61,15 @@ class BinanceFeed:
         self._reconnect_count = 0
         self.name = "binance"
 
+        # Always include ETH — our DEX pools are all ETH-based
+        all_symbols = list(symbols)
+        if "ethusdt" not in [s.lower() for s in all_symbols]:
+            all_symbols.insert(0, "ethusdt")
+
         # Only keep symbols Kraken supports
         supported = []
         self._sym_to_pair: Dict[str, str] = {}  # "ETHUSDT" → "ETH/USDT"
-        for sym in symbols:
+        for sym in all_symbols:
             sym_up = sym.upper()
             if sym_up in _KRAKEN_SUPPORTED:
                 pair = _normalize(sym_up)
@@ -103,9 +114,9 @@ class BinanceFeed:
                             continue
                         recv_ns = time.time_ns()
                         for kraken_sym, data in body.get("result", {}).items():
-                            # Kraken result keys are like "ETHUSDT" or "XETHZUSDT"
-                            # Normalize by stripping leading X/Z
-                            clean = kraken_sym.lstrip("XZ") if kraken_sym.startswith(("X", "Z")) and len(kraken_sym) > 6 else kraken_sym
+                            # Kraken uses non-standard keys for some pairs:
+                            # DOGE → XDGUSDT, normalize back to DOGEUSDT
+                            clean = _KRAKEN_KEY_MAP.get(kraken_sym, kraken_sym)
                             pair = self._sym_to_pair.get(clean) or self._sym_to_pair.get(kraken_sym)
                             if not pair:
                                 continue

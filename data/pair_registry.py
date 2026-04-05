@@ -15,8 +15,8 @@ from data.db import Database
 
 logger = logging.getLogger(__name__)
 
-# Stablecoins and majors to exclude from "alts" list
-_EXCLUDE_BASE = {"BTC", "ETH", "USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP"}
+# Stablecoins to exclude — keep ETH and BTC since DEX pools are ETH-based
+_EXCLUDE_BASE = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP"}
 
 
 class PairRegistry:
