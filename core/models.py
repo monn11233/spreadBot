@@ -134,6 +134,8 @@ class Opportunity:
         "chain", "pool_address", "detected_at_ns",
         "cex_event", "dex_event", "vol_state", "is_viable",
         "notional_usd",
+        "slippage_dex_pct", "slippage_cex_pct",
+        "adjusted_spread_pct", "slippage_confidence",
     )
 
     def __init__(
@@ -153,6 +155,10 @@ class Opportunity:
         vol_state: "VolatilityState",
         is_viable: bool,
         notional_usd: float = 0.0,
+        slippage_dex_pct: float = 0.0,
+        slippage_cex_pct: float = 0.0,
+        adjusted_spread_pct: float = 0.0,
+        slippage_confidence: str = "unknown",
     ):
         self.pair = pair
         self.direction = direction
@@ -169,6 +175,10 @@ class Opportunity:
         self.vol_state = vol_state
         self.is_viable = is_viable
         self.notional_usd = notional_usd
+        self.slippage_dex_pct = slippage_dex_pct
+        self.slippage_cex_pct = slippage_cex_pct
+        self.adjusted_spread_pct = adjusted_spread_pct
+        self.slippage_confidence = slippage_confidence
 
     def __repr__(self) -> str:
         arrow = "CEX→DEX" if self.direction == Direction.BUY_CEX_SELL_DEX else "DEX→CEX"

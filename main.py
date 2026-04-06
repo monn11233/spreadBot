@@ -160,6 +160,13 @@ async def run_collect_or_paper(mode: TradeMode) -> None:
 
         # Build scanner first with a placeholder callback, then build dashboard,
         # then patch the real callback so both objects reference each other cleanly.
+        rpc_urls = {
+            k: v for k, v in {
+                Chain.ETHEREUM: settings.eth_ws_url,
+                Chain.ARBITRUM: settings.arb_ws_url,
+                Chain.BSC: settings.bsc_ws_url,
+            }.items() if v
+        }
         scanner = OpportunityScanner(
             bus=bus,
             fee_calculator=fee_calc,
@@ -169,6 +176,7 @@ async def run_collect_or_paper(mode: TradeMode) -> None:
             min_pool_volume_usd=settings.min_pool_volume_usd,
             on_opportunity=None,  # patched below
             adaptive_tuner=tuner,
+            rpc_urls=rpc_urls,
         )
 
         web_dashboard = DashboardServer(
@@ -234,6 +242,7 @@ async def run_collect_or_paper(mode: TradeMode) -> None:
         await tick_store.flush()
         if scanner:
             await scanner.stop()
+            await scanner._slippage_model.close()
         if tuner:
             await tuner.stop()
         for feed in feeds:
