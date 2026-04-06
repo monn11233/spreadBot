@@ -228,10 +228,19 @@ class OpportunityScanner:
             slippage_cex_pct = cex_slip.price_impact_pct
             slippage_confidence = dex_slip.confidence
 
-            if adjusted_spread_pct < threshold or not dex_slip.is_viable:
+            # Only hard-block when we have real slippage data (medium/high confidence).
+            # Low-confidence (heuristic) estimates are attached for display but
+            # don't kill the opportunity — we can't trust them enough to block.
+            if slippage_confidence != "low" and not dex_slip.is_viable:
                 logger.debug(
-                    "[scanner] Opportunity killed by slippage pair=%s dex=%.3f%% cex=%.3f%% adj=%.3f%%",
+                    "[scanner] Opportunity killed by slippage (high-confidence) pair=%s dex=%.3f%% cex=%.3f%% adj=%.3f%%",
                     pair, slippage_dex_pct * 100, slippage_cex_pct * 100, adjusted_spread_pct * 100,
+                )
+                is_viable = False
+            elif adjusted_spread_pct < threshold:
+                logger.debug(
+                    "[scanner] Opportunity killed by slippage-adjusted spread pair=%s adj=%.3f%% threshold=%.3f%%",
+                    pair, adjusted_spread_pct * 100, threshold * 100,
                 )
                 is_viable = False
 
