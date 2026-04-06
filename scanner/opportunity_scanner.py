@@ -219,14 +219,19 @@ class OpportunityScanner:
                 symbol=pair,
                 trade_amount_usd=notional,
             )
-            adjusted_spread_pct = self._slippage_model.net_spread_after_slippage(
-                raw_spread_pct=net_profit_pct,
-                dex_slippage=dex_slip,
-                cex_slippage=cex_slip,
-            )
             slippage_dex_pct = dex_slip.price_impact_pct
             slippage_cex_pct = cex_slip.price_impact_pct
             slippage_confidence = dex_slip.confidence
+
+            # Only adjust the gating spread when we have real on-chain data.
+            # Low-confidence (heuristic) estimates are attached for display only —
+            # subtracting them from the gate would block trades we can't properly evaluate.
+            if slippage_confidence != "low":
+                adjusted_spread_pct = self._slippage_model.net_spread_after_slippage(
+                    raw_spread_pct=net_profit_pct,
+                    dex_slippage=dex_slip,
+                    cex_slippage=cex_slip,
+                )
 
             # Only hard-block when we have real slippage data (medium/high confidence).
             # Low-confidence (heuristic) estimates are attached for display but
