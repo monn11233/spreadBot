@@ -86,6 +86,10 @@ class DashboardServer:
             "net_profit_pct": round(opp.net_profit_pct * 100, 4),
             "notional_usd": opp.notional_usd,
             "viable": opp.is_viable,
+            "slippage_dex_pct": round(opp.slippage_dex_pct * 100, 4),
+            "slippage_cex_pct": round(opp.slippage_cex_pct * 100, 4),
+            "adjusted_spread_pct": round(opp.adjusted_spread_pct * 100, 4),
+            "slippage_confidence": opp.slippage_confidence,
         })
 
     def on_trade(self, record) -> None:

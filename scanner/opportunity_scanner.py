@@ -15,14 +15,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from core.events import PriceEventBus
 from core.models import Chain, Direction, FeeModel, Opportunity, PriceEvent, VolatilityState
 from core.registry import PriceRegistry
 from scanner.fee_model import FeeCalculator
+from scanner.slippage_model import SlippageModel
 from scanner.volatility_tracker import VolatilityTracker
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from scanner.adaptive_tuner import AdaptiveTuner
 
@@ -49,6 +49,7 @@ class OpportunityScanner:
         min_pool_volume_usd: float = 100_000.0,
         on_opportunity: Optional[Callable[[Opportunity], None]] = None,
         adaptive_tuner: Optional["AdaptiveTuner"] = None,
+        rpc_urls: Optional[Dict[Chain, str]] = None,
     ):
         self._bus = bus
         self._fee_calc = fee_calculator
@@ -59,6 +60,7 @@ class OpportunityScanner:
         self._on_opportunity = on_opportunity
         self._tuner = adaptive_tuner
         self._registry = PriceRegistry()
+        self._slippage_model = SlippageModel(rpc_urls=rpc_urls or {}, cache_ttl=2.0)
 
         # Stats
         self._events_processed = 0
@@ -146,7 +148,7 @@ class OpportunityScanner:
         threshold_a = self._effective_threshold(
             cex_event.pair, chain_val, Direction.BUY_CEX_SELL_DEX.name, vol_threshold
         )
-        self._emit_if_viable(
+        await self._emit_if_viable(
             pair=cex_event.pair,
             direction=Direction.BUY_CEX_SELL_DEX,
             cex_price=cex_event.ask,
@@ -165,7 +167,7 @@ class OpportunityScanner:
         threshold_b = self._effective_threshold(
             cex_event.pair, chain_val, Direction.BUY_DEX_SELL_CEX.name, vol_threshold
         )
-        self._emit_if_viable(
+        await self._emit_if_viable(
             pair=cex_event.pair,
             direction=Direction.BUY_DEX_SELL_CEX,
             cex_price=cex_event.bid,
@@ -179,7 +181,7 @@ class OpportunityScanner:
             notional=notional,
         )
 
-    def _emit_if_viable(
+    async def _emit_if_viable(
         self,
         pair: str,
         direction: Direction,
@@ -197,6 +199,42 @@ class OpportunityScanner:
         is_viable = net_profit_pct >= threshold
 
         self._opportunities_found += 1
+
+        slippage_dex_pct = 0.0
+        slippage_cex_pct = 0.0
+        adjusted_spread_pct = net_profit_pct
+        slippage_confidence = "unknown"
+
+        if is_viable:
+            fee_tier = int(fee_model.dex_pool_fee * 1_000_000)
+            dex_slip = await self._slippage_model.estimate_dex_slippage(
+                pool_address=dex_event.pool_address or "",
+                chain=dex_event.chain or Chain.ETHEREUM,
+                trade_amount_usd=notional,
+                is_buy=(direction == Direction.BUY_DEX_SELL_CEX),
+                token0_price_usd=cex_price,
+                fee_tier=fee_tier,
+            )
+            cex_slip = await self._slippage_model.estimate_cex_slippage(
+                symbol=pair,
+                trade_amount_usd=notional,
+            )
+            adjusted_spread_pct = self._slippage_model.net_spread_after_slippage(
+                raw_spread_pct=net_profit_pct,
+                dex_slippage=dex_slip,
+                cex_slippage=cex_slip,
+            )
+            slippage_dex_pct = dex_slip.price_impact_pct
+            slippage_cex_pct = cex_slip.price_impact_pct
+            slippage_confidence = dex_slip.confidence
+
+            if adjusted_spread_pct < threshold or not dex_slip.is_viable:
+                logger.debug(
+                    "[scanner] Opportunity killed by slippage pair=%s dex=%.3f%% cex=%.3f%% adj=%.3f%%",
+                    pair, slippage_dex_pct * 100, slippage_cex_pct * 100, adjusted_spread_pct * 100,
+                )
+                is_viable = False
+
         if is_viable:
             self._opportunities_viable += 1
 
@@ -216,6 +254,10 @@ class OpportunityScanner:
             vol_state=vol_state,
             is_viable=is_viable,
             notional_usd=notional,
+            slippage_dex_pct=slippage_dex_pct,
+            slippage_cex_pct=slippage_cex_pct,
+            adjusted_spread_pct=adjusted_spread_pct,
+            slippage_confidence=slippage_confidence,
         )
 
         if is_viable and self._on_opportunity:
