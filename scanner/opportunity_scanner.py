@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Sources that are DEX-side (not Binance CEX)
-DEX_SOURCES = {"uniswap_eth", "uniswap_arb", "pancakeswap_bsc", "jupiter_sol"}
+DEX_SOURCES = {"uniswap_eth", "uniswap_arb", "pancakeswap_bsc", "jupiter_sol", "poller_eth", "poller_arb"}
 CEX_SOURCE = "binance"
 
 
