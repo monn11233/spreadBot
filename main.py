@@ -116,13 +116,15 @@ async def run_collect_or_paper(mode: TradeMode) -> None:
 
     # DEX price pollers — poll slot0() every 3s to get dense price series
     # Runs alongside the Swap event WebSocket feeds (complementary)
+    def _ws_to_http(url: str) -> str:
+        http = url.replace("wss://", "https://").replace("ws://", "http://")
+        return http[:-3] if http.endswith("/ws") else http
+
     pollers = []
     if settings.eth_ws_url:
-        eth_http = settings.eth_ws_url.replace("wss://", "https://").replace("ws://", "http://")
-        pollers.append(DexPricePoller(bus, eth_http, ETH_MAINNET_POOLS, Chain.ETHEREUM, interval=3.0))
+        pollers.append(DexPricePoller(bus, _ws_to_http(settings.eth_ws_url), ETH_MAINNET_POOLS, Chain.ETHEREUM, interval=3.0))
     if settings.arb_ws_url:
-        arb_http = settings.arb_ws_url.replace("wss://", "https://").replace("ws://", "http://")
-        pollers.append(DexPricePoller(bus, arb_http, ARB_MAINNET_POOLS, Chain.ARBITRUM, interval=3.0))
+        pollers.append(DexPricePoller(bus, _ws_to_http(settings.arb_ws_url), ARB_MAINNET_POOLS, Chain.ARBITRUM, interval=3.0))
 
     # Volatility tracker and scanner
     vol_tracker = VolatilityTracker(min_profit_base=settings.min_profit_pct)

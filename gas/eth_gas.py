@@ -32,7 +32,9 @@ class EthGasTracker:
             eth_price_getter: Callable() -> float returning current ETH/USD price.
                               If None, uses a hardcoded fallback.
         """
-        self._http_url = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+        http = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+        # Ankr WS URLs end in /ws — strip it to get the HTTP RPC endpoint
+        self._http_url = http[:-3] if http.endswith("/ws") else http
         self._eth_price_getter = eth_price_getter or (lambda: 3000.0)
         self.state = GasState(chain=Chain.ETHEREUM)
         self._running = False

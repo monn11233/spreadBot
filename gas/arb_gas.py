@@ -29,7 +29,9 @@ _POLL_INTERVAL = 5.0             # seconds
 
 class ArbGasTracker:
     def __init__(self, ws_url: str, eth_price_getter=None):
-        self._http_url = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+        http = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+        # Ankr WS URLs end in /ws — strip it to get the HTTP RPC endpoint
+        self._http_url = http[:-3] if http.endswith("/ws") else http
         self._eth_price_getter = eth_price_getter or (lambda: 3000.0)
         self.state = GasState(chain=Chain.ARBITRUM)
         self._running = False
